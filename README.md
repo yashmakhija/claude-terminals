@@ -31,35 +31,32 @@ c terminal 2    # 2 panes
 
 ### Parallel work session
 
-Assign each pane a task. A shared `TASKS.md` is created so every Claude can see the full picture and update status as it works.
-
 ```bash
-c work "implement auth" "fix login bug" "write tests" "update docs"
+c worktree
 ```
 
-Each pane shows a task banner and starts Claude. Claude reads `TASKS.md` automatically (via `CLAUDE.md`) and knows what all agents are working on.
+Two prompts:
 
-### With git worktrees
-
-Each task gets its own isolated branch — no file conflicts between agents.
-
-```bash
-c work --worktree "implement auth" "fix login bug" "write tests"
+```
+How many terminals? [2/3/4/6/8, default 4]: 4
+What are you working on? Refactor auth system to use JWT
 ```
 
-Creates `../project-wt-1/`, `../project-wt-2/`, `../project-wt-3/` — each on a separate branch derived from the task name. `TASKS.md` is symlinked into every worktree so all agents share the same status board.
+That's it. Four panes open. Every Claude shares the same goal via `TASKS.md` and `CLAUDE.md`.
+
+**Agent 1 (top-left) is the lead** — it reads the codebase, breaks the goal into subtasks in `TASKS.md`, then starts on its piece. Agents 2–4 read `TASKS.md`, each claims a task, and works independently.
 
 ## Layout
 
 ```
-┌─────────────┬─────────────┐
-│   task 1    │   task 2    │
-├─────────────┼─────────────┤
-│   task 3    │   task 4    │
-└─────────────┴─────────────┘
+┌──────────────┬──────────────┐
+│   agent 1    │   agent 2    │
+│   (lead)     │              │
+├──────────────┼──────────────┤
+│   agent 3    │   agent 4    │
+│              │              │
+└──────────────┴──────────────┘
 ```
-
-Tasks are numbered in reading order. Each pane shows its assignment when it opens.
 
 ## Requirements
 
