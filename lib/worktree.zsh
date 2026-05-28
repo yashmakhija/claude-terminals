@@ -74,34 +74,69 @@ fi
 
 # ── TASKS.md ──────────────────────────────────────────────────────────────────
 
-if [[ "$_goal_mode" == "diff" ]]; then
-  {
-    printf "# Parallel Work Session\n\n"
-    printf "## Tasks\n\n"
-    printf "| # | Task | Agent | Status | Notes |\n"
-    printf "|---|------|-------|--------|-------|\n"
+local _now; _now=$(date '+%H:%M')
+
+{
+  if [[ "$_goal_mode" == "diff" ]]; then
+    printf "# Parallel Work Session\n"
+  else
+    printf "# %s\n" "${_goals[1]}"
+  fi
+  printf "_Started: %s — %d agents_\n\n" "$_now" "$n"
+
+  # Agent Status — live heartbeat table
+  printf "## Agent Status\n\n"
+  printf "| Agent | Status | Current Task | Notes |\n"
+  printf "|-------|--------|--------------|-------|\n"
+  for i in $(seq 1 "$n"); do
+    if [[ $i -eq 1 ]]; then
+      printf "| Agent %d (lead) | ⏳ starting | planning | |\n" "$i"
+    else
+      printf "| Agent %d | ⏳ waiting | waiting for TASKS | |\n" "$i"
+    fi
+  done
+
+  printf "\n---\n\n"
+
+  # Task board
+  printf "## Task Board\n\n"
+  if [[ "$_goal_mode" == "diff" ]]; then
+    printf "| # | Task | Agent | Phase | Status | Notes |\n"
+    printf "|---|------|-------|-------|--------|-------|\n"
     for i in $(seq 1 "$n"); do
-      printf "| %d | %s | | ⏳ pending | |\n" "$i" "${_goals[$i]}"
+      printf "| %d | %s | | 1 | ⏳ pending | |\n" "$i" "${_goals[$i]}"
     done
-    printf "\n## Protocol\n"
-    printf "- Claim your row: put your agent number in the Agent column\n"
-    printf "- Status: ⏳ pending → 🔄 in progress → ✅ done\n"
-    printf "- Commit: \`git add TASKS.md && git commit -m 'tasks: update'\`\n"
-  } > "$main_dir/TASKS.md"
-else
-  {
-    printf "# %s\n\n" "${_goals[1]}"
-    printf "## Tasks\n\n"
-    printf "| # | Task | Agent | Status | Notes |\n"
-    printf "|---|------|-------|--------|-------|\n"
-    printf "| - | *(agent 1 will fill this in)* | | | |\n\n"
-    printf "## Protocol\n"
-    printf "- **Agent 1 (lead):** reads the codebase, breaks the goal into subtasks above\n"
-    printf "- **All agents:** claim a row, keep status updated\n"
-    printf "- Status: ⏳ pending → 🔄 in progress → ✅ done\n"
-    printf "- Commit: \`git add TASKS.md && git commit -m 'tasks: update'\`\n"
-  } > "$main_dir/TASKS.md"
-fi
+  else
+    printf "| # | Task | Agent | Phase | Status | Notes |\n"
+    printf "|---|------|-------|-------|--------|-------|\n"
+    printf "| - | _(Agent 1 fills this in after reading the codebase)_ | | | | |\n"
+  fi
+
+  printf "\n---\n\n"
+
+  # Shared memory — all agents read and write here
+  printf "## Shared Memory\n\n"
+  printf "> Key decisions, findings, and context all agents need to know.\n"
+  printf "> Any agent can add here — write enough for another agent to pick up your work.\n\n"
+  printf "_(empty — agents will populate this as they work)_\n\n"
+
+  printf "---\n\n"
+
+  # Blockers
+  printf "## Blockers\n\n"
+  printf "_(none yet)_\n\n"
+
+  printf "---\n\n"
+
+  # Protocol
+  printf "## Collaboration Rules\n\n"
+  printf "1. **Before every action:** re-read this file to see what others are doing\n"
+  printf "2. **Update Agent Status** every time you start or finish a subtask\n"
+  printf "3. **Write to Shared Memory** any finding that another agent might need\n"
+  printf "4. **Post to Blockers** if you're stuck — another agent may unblock you\n"
+  printf "5. Status flow: ⏳ pending → 🔄 in progress → ✅ done → 🚫 blocked\n"
+  printf "6. Save after every update — this file is the live memory shared by all agents\n"
+} > "$main_dir/TASKS.md"
 
 for i in $(seq 1 "$n"); do
   ln -sf "$main_dir/TASKS.md" "${_dirs[$i]}/TASKS.md" 2>/dev/null || true
@@ -118,10 +153,15 @@ if [[ -f "$claude_md" ]]; then
 fi
 {
   printf "<!-- claude-work-session -->\n"
-  printf "## Active Work Session\n"
-  printf "**Agents:** %d Claude instances, each on their own git branch\n\n" "$n"
-  printf "Read \`TASKS.md\` to see all tasks. Claim one and keep it updated.\n"
-  printf "Your changes stay on your branch — merge when done.\n"
+  printf "## Active Work Session (%d agents)\n\n" "$n"
+  printf "\`TASKS.md\` is the shared live memory for this session — read it before every action, write back after every subtask.\n\n"
+  printf "| Section | Purpose |\n"
+  printf "|---------|--------|\n"
+  printf "| Agent Status | Who is doing what right now — update your row constantly |\n"
+  printf "| Task Board | All tasks and their phases — claim rows, update status |\n"
+  printf "| Shared Memory | Findings, decisions, context — write anything another agent needs |\n"
+  printf "| Blockers | Post when stuck; check if you can unblock others |\n\n"
+  printf "Your code changes stay on your branch (\`work/agent-N\`). Merge when done.\n"
   printf "<!-- /claude-work-session -->\n"
 } >> "$claude_md"
 
@@ -140,9 +180,31 @@ for i in $(seq 1 "$n"); do
   local sys_prompt
 
   if [[ $i -eq 1 ]]; then
-    sys_prompt="Goal: ${goal}. You are Agent 1 (lead) of ${n} in a parallel work session. Read the codebase first, break the goal into subtasks in TASKS.md, claim task 1, and start working. Other agents are waiting for your TASKS.md update."
+    sys_prompt="You are Agent 1 (lead) of ${n} in a parallel work session. Goal: ${goal}.
+
+TASKS.md is your shared live memory — all agents read and write it. It syncs in real-time.
+
+Your first move:
+1. Read the codebase to understand the project
+2. Break the goal into subtasks in TASKS.md (Task Board section), one row per agent
+3. Update your row in Agent Status to show what you're doing
+4. Write any key findings to Shared Memory so other agents can start
+5. Claim task 1 and start working
+
+Before every action: re-read TASKS.md. After every subtask: update your Agent Status row and add findings to Shared Memory. Post to Blockers if stuck. Save the file — it is the live coordination layer."
   else
-    sys_prompt="Goal: ${goal}. You are Agent ${i} of ${n} in a parallel work session. Read TASKS.md, claim an available task (put your agent number in the Agent column), and work independently. Update status as you go."
+    sys_prompt="You are Agent ${i} of ${n} in a parallel work session. Goal: ${goal}.
+
+TASKS.md is your shared live memory — all agents read and write it. It syncs in real-time.
+
+Your first move:
+1. Read TASKS.md — wait for Agent 1 to fill the Task Board if it is empty
+2. Claim an available task: put ${i} in the Agent column, change status to 🔄 in progress
+3. Update your row in Agent Status
+4. Work on your task; write key findings to Shared Memory as you go
+5. When done, mark ✅ done and pick the next unclaimed task
+
+Before every action: re-read TASKS.md. After every subtask: update Agent Status and Shared Memory. Post to Blockers if stuck. Save the file — it is the live coordination layer."
   fi
 
   _cmds+=("cd $(printf '%q' "$wt") && claude -n $(printf '%q' "Agent ${i}: ${goal}") --append-system-prompt $(printf '%q' "$sys_prompt")")
