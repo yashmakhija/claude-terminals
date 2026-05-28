@@ -289,7 +289,15 @@ Your first move:
 
 Before every action: re-read TASKS.md. After every subtask: update Agent Status and Shared Memory. Post to Blockers if stuck."
 
-  _cmds+=("cd $(printf '%q' "$wt") && claude -n $(printf '%q' "Agent ${i}: ${goal}") --append-system-prompt $(printf '%q' "$sys_prompt")")
+  # Write claude invocation to a temp script so terminals only see a short path,
+  # not the full --append-system-prompt content being typed character by character.
+  local _pscript="/tmp/c-$$-${i}"
+  printf '#!/usr/bin/env zsh\ncd %s && exec claude -n %s --append-system-prompt %s\n' \
+    "$(printf '%q' "$wt")" \
+    "$(printf '%q' "Agent ${i}: ${goal}")" \
+    "$(printf '%q' "$sys_prompt")" > "$_pscript"
+  chmod +x "$_pscript"
+  _cmds+=("$_pscript")
 done
 
 echo ""
