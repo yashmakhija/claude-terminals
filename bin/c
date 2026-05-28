@@ -1,0 +1,147 @@
+#!/usr/bin/env zsh
+# Usage: c terminal <N>   (default: 4)
+# Supports: cmux (native CLI), Ghostty (AppleScript), any terminal (tmux)
+
+[[ "$1" != "terminal" ]] && { echo "Usage: c terminal <number>"; exit 1; }
+
+n="${2:-4}"
+dir="$PWD"
+
+# 2-column layout: left=ceil(n/2), right=floor(n/2)
+# N=3→[A/C|B]  N=4→[A/C|B/D]  N=5→[A/C/E|B/D]  N=6→[A/C/E|B/D/F]
+_right=$(( n / 2 ))
+_left=$(( n - _right ))
+
+# ── 1. cmux native CLI ────────────────────────────────────────────────────
+# Only used when the socket is actually reachable (i.e. we're inside cmux)
+
+_cmux_bin() {
+  local b="/Applications/cmux.app/Contents/Resources/bin/cmux"
+  [[ -x "$b" ]] && { echo "$b"; return; }
+  command -v cmux 2>/dev/null
+}
+CMUX_BIN=$(_cmux_bin)
+
+if [[ -n "$CMUX_SURFACE_ID" && -n "$CMUX_BIN" ]] && "$CMUX_BIN" ping &>/dev/null; then
+  echo "Setting up $_left+$_right pane workspace (cmux)..."
+
+  _csplit() {
+    local out
+    out=$("$CMUX_BIN" new-split "$1" --surface "$2" 2>&1)
+    echo "$out" | grep -o 'surface:[0-9]*'
+  }
+  _csend() { "$CMUX_BIN" send --surface "$1" "${2}\n" 2>/dev/null; }
+
+  my="$CMUX_SURFACE_ID"
+  right_surfs=(); left_extra=()
+
+  if (( _right >= 1 )); then
+    sleep 0.2; right_surfs+=( "$(_csplit right "$my")" )
+    for i in $(seq 2 $_right); do
+      sleep 0.2; right_surfs+=( "$(_csplit down "${right_surfs[-1]}")" )
+    done
+  fi
+
+  last="$my"
+  for i in $(seq 2 $_left); do
+    sleep 0.2
+    s=$(_csplit down "$last"); left_extra+=("$s"); last="$s"
+  done
+
+  "$CMUX_BIN" workspace-action --action equalize_splits 2>/dev/null
+  sleep 0.5
+  # Run claude in every pane (new panes inherit cwd, so no cd needed)
+  for s in "${right_surfs[@]}" "${left_extra[@]}"; do _csend "$s" "claude"; done
+  # Clear script output then start claude in original pane
+  _csend "$my" "clear && claude"
+
+  echo "Done — $n panes ready."
+  exit 0
+fi
+
+# ── 2. Ghostty native splits ──────────────────────────────────────────────
+_ghostty_windows=$(osascript -e 'tell application "Ghostty" to count windows' 2>&1)
+
+if [[ "$_ghostty_windows" =~ ^[0-9]+$ && "$_ghostty_windows" -gt 0 ]]; then
+  echo "Setting up $_left+$_right pane workspace (Ghostty native)..."
+
+  # Build split + input commands — plain split (no surface configuration, broader compat)
+  as_splits=""
+  right_vars=()
+  if (( _right >= 1 )); then
+    as_splits+="  set tR1 to split myT direction right\n"
+    as_splits+="  input text (\"cd '$dir' && clear && claude\" & return) to tR1\n"
+    right_vars+=(tR1); prev="tR1"
+    for i in $(seq 2 $_right); do
+      v="tR${i}"
+      as_splits+="  set $v to split $prev direction down\n"
+      as_splits+="  input text (\"cd '$dir' && clear && claude\" & return) to $v\n"
+      right_vars+=("$v"); prev="$v"
+    done
+  fi
+
+  left_vars=(); prev="myT"
+  for i in $(seq 2 $_left); do
+    v="tL${i}"
+    as_splits+="  set $v to split $prev direction down\n"
+    as_splits+="  input text (\"cd '$dir' && clear && claude\" & return) to $v\n"
+    left_vars+=("$v"); prev="$v"
+  done
+
+  result=$(osascript 2>&1 << ASEOF
+tell application "Ghostty"
+  try
+    set myT to focused terminal of selected tab of front window
+$(printf "%b" "$as_splits")
+    perform action "equalize_splits" on myT
+    input text ("clear && claude" & return) to myT
+    return "ok"
+  on error msg
+    return "error:" & msg
+  end try
+end tell
+ASEOF
+  )
+
+  if [[ "$result" == "ok" ]]; then
+    echo "Done — $n panes ready."
+    exit 0
+  else
+    echo "Ghostty split failed: $result"
+    echo "Tip: System Settings → Privacy & Security → Automation → Ghostty ✓"
+    echo "Falling back to tmux..."
+  fi
+fi
+
+# ── 3. tmux — works in any terminal ──────────────────────────────────────
+
+if ! command -v tmux &>/dev/null; then
+  echo "Error: tmux required. Install: brew install tmux"
+  exit 1
+fi
+
+_tmux_conf="$HOME/.config/claude-terminals/tmux.conf"
+# Dedicated tmux server so our config always loads (doesn't conflict with user's tmux)
+_tmux_sock="claude-terminals"
+_tmux() { tmux -L "$_tmux_sock" -f "$_tmux_conf" "$@"; }
+
+# Unique session per invocation — each tab/window gets its own independent workspace
+session="$(basename "$dir")-$$"
+echo "Setting up $n pane workspace (session: $session)..."
+
+if [[ -n "$TMUX" ]]; then
+  for i in $(seq 2 "$n"); do tmux split-window -c "$dir"; done
+  tmux select-layout tiled
+  for i in $(seq 0 $(( n - 1 ))); do tmux send-keys -t $i "claude" Enter; done
+  exit 0
+fi
+
+_tmux new-session -d -s "$session" -c "$dir"
+for i in $(seq 2 "$n"); do
+  _tmux split-window -t "${session}:1" -c "$dir"
+done
+_tmux select-layout -t "${session}:1" tiled
+for i in $(seq 1 "$n"); do
+  _tmux send-keys -t "${session}:1.$i" "claude" Enter
+done
+exec tmux -L "$_tmux_sock" -f "$_tmux_conf" attach-session -t "$session"
