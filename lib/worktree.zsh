@@ -95,9 +95,13 @@ ${_ctx}"
 
   _plan_prompt="${_plan_prompt}
 
-Break this into exactly ${n} independent tasks agents can work on simultaneously.
-Reference actual files and directories from the project context above.
-Each task must be specific, actionable, and independently workable. Equal scope.
+Break this EXACT goal into exactly ${n} parallel tasks for ${n} agents.
+
+Rules:
+- Implement ONLY what is stated in the goal — do NOT add, invent, or expand scope
+- Each task is a different part of the same goal, not a different feature
+- Reference actual files and directories from the project context above
+- Tasks must be independently workable and roughly equal in scope
 
 Return exactly ${n} lines. One task per line. No numbers, no bullets, no extra text."
 
@@ -292,7 +296,8 @@ Before every action: re-read TASKS.md. After every subtask: update Agent Status 
   # Write claude invocation to a temp script so terminals only see a short path,
   # not the full --append-system-prompt content being typed character by character.
   local _pscript="/tmp/c-$$-${i}"
-  printf '#!/usr/bin/env zsh\nclear\ncd %s && exec claude -n %s --append-system-prompt %s\n' \
+  # \033[2J = clear screen, \033[H = cursor to top — faster than the clear command
+  printf '#!/usr/bin/env zsh\nprintf "\\033[2J\\033[H"\ncd %s && exec claude -n %s --append-system-prompt %s\n' \
     "$(printf '%q' "$wt")" \
     "$(printf '%q' "Agent ${i}: ${goal}")" \
     "$(printf '%q' "$sys_prompt")" > "$_pscript"
