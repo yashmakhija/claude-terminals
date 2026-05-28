@@ -1,33 +1,52 @@
 #!/usr/bin/env bash
 set -e
 
+REPO="https://raw.githubusercontent.com/chiragmakhija/claude-terminals/main"
+
 echo "Installing claude-terminals..."
 
 # Resolve source: local clone or remote download
 if [[ -f "./bin/c" ]]; then
-  SRC="./bin/c"
+  LOCAL=1
 else
-  TMP=$(mktemp)
-  curl -fsSL "https://raw.githubusercontent.com/chiragmakhija/claude-terminals/main/bin/c" -o "$TMP"
-  SRC="$TMP"
-  CLEANUP=1
+  LOCAL=0
 fi
 
-# Install to ~/bin
+# Install bin/c
 mkdir -p "$HOME/bin"
-cp "$SRC" "$HOME/bin/c"
+if (( LOCAL )); then
+  cp "./bin/c" "$HOME/bin/c"
+else
+  curl -fsSL "$REPO/bin/c" -o "$HOME/bin/c"
+fi
 chmod +x "$HOME/bin/c"
-[[ -n "$CLEANUP" ]] && rm -f "$SRC"
 echo "  Installed $HOME/bin/c"
 
-# Install tmux config (mouse, Alt+arrow nav, status bar hints)
+# Install lib/ scripts
+LIB_DIR="$HOME/lib/claude-terminals"
+mkdir -p "$LIB_DIR"
+for f in terminal.zsh worktree.zsh splits.zsh; do
+  if (( LOCAL )); then
+    cp "./lib/$f" "$LIB_DIR/$f"
+  else
+    curl -fsSL "$REPO/lib/$f" -o "$LIB_DIR/$f"
+  fi
+done
+echo "  Installed $LIB_DIR/"
+
+# Point bin/c at the installed lib/ location
+# bin/c resolves lib relative to itself: ../lib — so we need a symlink
+# or we patch the installed c to use an absolute lib path
+sed -i '' "s|_LIB=\"\${_BIN}/../lib\"|_LIB=\"$LIB_DIR\"|" "$HOME/bin/c"
+
+# Install tmux config
 TMUX_CONF_DIR="$HOME/.config/claude-terminals"
 TMUX_CONF="$TMUX_CONF_DIR/tmux.conf"
 mkdir -p "$TMUX_CONF_DIR"
-if [[ -f "./tmux.conf" ]]; then
+if (( LOCAL )); then
   cp "./tmux.conf" "$TMUX_CONF"
 else
-  curl -fsSL "https://raw.githubusercontent.com/chiragmakhija/claude-terminals/main/tmux.conf" -o "$TMUX_CONF"
+  curl -fsSL "$REPO/tmux.conf" -o "$TMUX_CONF"
 fi
 echo "  Installed $TMUX_CONF"
 
@@ -43,7 +62,7 @@ fi
 
 # Optional: add Claude Code SessionStart hook
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-if [[ -f "$CLAUDE_SETTINGS" ]]; then
+if [[ -t 0 && -f "$CLAUDE_SETTINGS" ]]; then
   echo ""
   read -rp "Add SessionStart reminder hook to Claude Code? [y/N] " add_hook
   if [[ "$add_hook" =~ ^[Yy]$ ]]; then
@@ -71,5 +90,5 @@ echo "Done! Restart your shell or run:"
 echo "  source $SHELL_RC"
 echo ""
 echo "Usage:"
-echo "  c terminal 4    # open 4 splits, claude in pane 1"
-echo "  c terminal 2    # open 2 splits"
+echo "  c terminal 4    # open 4 panes, claude in each"
+echo "  c worktree      # parallel work session with git worktrees"
