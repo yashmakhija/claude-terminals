@@ -38,7 +38,7 @@ if [[ -n "$CMUX_SURFACE_ID" && -n "$CMUX_BIN" ]] && "$CMUX_BIN" ping &>/dev/null
 
   for k in $(seq 1 ${#right_surfs[@]}); do _csend "${right_surfs[$k]}" "${_cmds[$(( 2*k ))]}"; done
   for k in $(seq 1 ${#left_extra[@]}); do _csend "${left_extra[$k]}" "${_cmds[$(( 2*k+1 ))]}"; done
-  _csend "$my" "clear && ${_cmds[1]}"
+  _csend "$my" "${_cmds[1]}"
   exit 0
 fi
 
@@ -99,14 +99,14 @@ _tmux() { tmux -L "$_tmux_sock" -f "$_tmux_conf" "$@"; }
 session="$(basename "${_dirs[1]}")-$$"
 
 if [[ -n "$TMUX" ]]; then
-  for i in $(seq 2 "$n"); do tmux split-window -c "${_dirs[$i]}"; done
+  # Pass commands directly — nothing gets typed into the terminal
+  for i in $(seq 2 "$n"); do tmux split-window -c "${_dirs[$i]}" "${_cmds[$i]}"; done
   tmux select-layout tiled
-  for i in $(seq 1 "$n"); do tmux send-keys -t $(( i-1 )) "${_cmds[$i]}" Enter; done
-  exit 0
+  exec "${_cmds[1]}"
 fi
 
-_tmux new-session -d -s "$session" -c "${_dirs[1]}"
-for i in $(seq 2 "$n"); do _tmux split-window -t "${session}:1" -c "${_dirs[$i]}"; done
+# New dedicated tmux session — commands passed directly, no send-keys
+_tmux new-session -d -s "$session" -c "${_dirs[1]}" "${_cmds[1]}"
+for i in $(seq 2 "$n"); do _tmux split-window -t "${session}:1" -c "${_dirs[$i]}" "${_cmds[$i]}"; done
 _tmux select-layout -t "${session}:1" tiled
-for i in $(seq 1 "$n"); do _tmux send-keys -t "${session}:1.$i" "${_cmds[$i]}" Enter; done
 exec tmux -L "$_tmux_sock" -f "$_tmux_conf" attach-session -t "$session"

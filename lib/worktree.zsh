@@ -292,7 +292,7 @@ Before every action: re-read TASKS.md. After every subtask: update Agent Status 
   # Write claude invocation to a temp script so terminals only see a short path,
   # not the full --append-system-prompt content being typed character by character.
   local _pscript="/tmp/c-$$-${i}"
-  printf '#!/usr/bin/env zsh\ncd %s && exec claude -n %s --append-system-prompt %s\n' \
+  printf '#!/usr/bin/env zsh\nclear\ncd %s && exec claude -n %s --append-system-prompt %s\n' \
     "$(printf '%q' "$wt")" \
     "$(printf '%q' "Agent ${i}: ${goal}")" \
     "$(printf '%q' "$sys_prompt")" > "$_pscript"
