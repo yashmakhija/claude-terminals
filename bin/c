@@ -1,0 +1,244 @@
+#!/usr/bin/env zsh
+# c terminal <N>                       open N panes with claude in each
+# c work [--worktree] "t1" "t2" ...   coordinated parallel work session
+
+# ── Subcommand ────────────────────────────────────────────────────────────────
+case "$1" in
+  work)     _WORK=1; shift ;;
+  terminal) _WORK=0; shift ;;
+  *) echo "Usage: c terminal <N> | c work [--worktree] \"task1\" \"task2\" ..."; exit 1 ;;
+esac
+
+dir="$PWD"
+typeset -a _cmds _dirs
+
+# ── c work: parse args, write TASKS.md, build per-pane scripts ────────────────
+if (( _WORK )); then
+  _wt=0
+  [[ "$1" == "--worktree" ]] && { _wt=1; shift; }
+
+  typeset -a _tasks; _tasks=("$@")
+  (( ${#_tasks[@]} )) || { echo "Usage: c work [--worktree] \"task1\" \"task2\" ..."; exit 1; }
+  n=${#_tasks[@]}
+
+  # TASKS.md — shared coordination board
+  {
+    printf "# Work Session — %s\n\n## Board\n\n| # | Task | Status | Notes |\n|---|------|--------|-------|\n" \
+      "$(date '+%Y-%m-%d %H:%M')"
+    for i in $(seq 1 $n); do
+      printf "| %d | %s | ⏳ pending | |\n" "$i" "${_tasks[$i]}"
+    done
+    printf "\n## Protocol\n"
+    printf -- "- Update Status to \`🔄 in progress\` when you start\n"
+    printf -- "- Update to \`✅ done\` when finished, add a note\n"
+    printf -- "- Commit: \`git add TASKS.md && git commit -m 'tasks: update'\`\n"
+    printf -- "- Check other rows before touching shared files\n"
+  } > "$dir/TASKS.md"
+  echo "Created TASKS.md"
+
+  # CLAUDE.md — append work-session context block (idempotent)
+  if ! grep -q 'claude-work-session' "$dir/CLAUDE.md" 2>/dev/null; then
+    { [[ -f "$dir/CLAUDE.md" ]] && printf "\n"
+      printf "<!-- claude-work-session -->\n"
+      printf "## Parallel Work Session\n"
+      printf "Multiple Claude agents are active. Read \`TASKS.md\` for all tasks and status.\n"
+      printf "Your task is shown in your terminal. Update TASKS.md as you work.\n"
+      printf "<!-- /claude-work-session -->\n"
+    } >> "$dir/CLAUDE.md"
+  fi
+
+  # Build per-pane dirs (with worktrees) and startup scripts
+  local proj; proj=$(basename "$dir")
+  for i in $(seq 1 $n); do
+    local pane_dir="$dir"
+
+    if (( _wt )); then
+      git -C "$dir" rev-parse --git-dir &>/dev/null || { echo "Error: --worktree requires a git repo"; exit 1; }
+      local branch; branch=$(printf '%s' "${_tasks[$i]}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-')
+      pane_dir="${dir%/*}/${proj}-wt-${i}"
+      if [[ ! -d "$pane_dir" ]]; then
+        git -C "$dir" worktree add -b "$branch" "$pane_dir" HEAD 2>/dev/null || \
+          git -C "$dir" worktree add "$pane_dir" "$branch" 2>/dev/null || true
+        ln -sf "$dir/TASKS.md" "$pane_dir/TASKS.md" 2>/dev/null || true
+        echo "  Worktree $i: $pane_dir (branch: $branch)"
+      fi
+    fi
+    _dirs+=("$pane_dir")
+
+    # Per-pane startup script — handles cd + task banner + claude
+    local pscript="/tmp/claude-pane-$$-${i}.sh"
+    local task="${_tasks[$i]}"
+    local task_safe="${task//\"/\\\"}"  # escape double quotes in task text
+    {
+      echo '#!/bin/zsh'
+      printf 'cd %s\n' "$(printf '%q' "$pane_dir")"
+      echo 'echo ""'
+      printf 'echo "  Task %d: %s"\n' "$i" "$task_safe"
+      echo 'echo "  See TASKS.md for full board"'
+      echo 'echo ""'
+      echo 'claude'
+    } > "$pscript"
+    chmod +x "$pscript"
+    _cmds+=("source $pscript")
+  done
+
+else
+  # c terminal mode — all panes run plain claude
+  n="${1:-4}"
+  for i in $(seq 1 $n); do
+    _dirs+=("$dir")
+    _cmds+=("claude")
+  done
+fi
+
+# Layout: 2-column grid  left=ceil(n/2)  right=floor(n/2)
+# Visual order: orig=1  tR1=2  tL2=3  tR2=4  tL3=5  tR3=6 ...
+# right_surfs[k] → visual index 2k   (2,4,6...)
+# left_extra[k]  → visual index 2k+1 (3,5,7...)
+# original       → visual index 1
+_right=$(( n / 2 ))
+_left=$(( n - _right ))
+
+# ── 1. cmux native CLI ────────────────────────────────────────────────────────
+_cmux_bin() {
+  local b="/Applications/cmux.app/Contents/Resources/bin/cmux"
+  [[ -x "$b" ]] && { echo "$b"; return; }
+  command -v cmux 2>/dev/null
+}
+CMUX_BIN=$(_cmux_bin)
+
+if [[ -n "$CMUX_SURFACE_ID" && -n "$CMUX_BIN" ]] && "$CMUX_BIN" ping &>/dev/null; then
+  echo "Setting up $_left+$_right pane workspace (cmux)..."
+  _csplit() { local out; out=$("$CMUX_BIN" new-split "$1" --surface "$2" 2>&1); echo "$out" | grep -o 'surface:[0-9]*'; }
+  _csend() { "$CMUX_BIN" send --surface "$1" "${2}\n" 2>/dev/null; }
+
+  my="$CMUX_SURFACE_ID"
+  typeset -a right_surfs left_extra
+
+  if (( _right >= 1 )); then
+    sleep 0.2; right_surfs+=( "$(_csplit right "$my")" )
+    for i in $(seq 2 $_right); do
+      sleep 0.2; right_surfs+=( "$(_csplit down "${right_surfs[-1]}")" )
+    done
+  fi
+  last="$my"
+  for i in $(seq 2 $_left); do
+    sleep 0.2; local s; s=$(_csplit down "$last"); left_extra+=("$s"); last="$s"
+  done
+
+  "$CMUX_BIN" workspace-action --action equalize_splits 2>/dev/null
+  sleep 0.5
+
+  for k in $(seq 1 ${#right_surfs[@]}); do
+    _csend "${right_surfs[$k]}" "${_cmds[$(( 2*k ))]}"
+  done
+  for k in $(seq 1 ${#left_extra[@]}); do
+    _csend "${left_extra[$k]}" "${_cmds[$(( 2*k+1 ))]}"
+  done
+  _csend "$my" "clear && ${_cmds[1]}"
+
+  echo "Done — $n panes ready."
+  exit 0
+fi
+
+# ── 2. Ghostty native splits ──────────────────────────────────────────────────
+_ghostty_windows=$(osascript -e 'tell application "Ghostty" to count windows' 2>&1)
+
+if [[ "$_ghostty_windows" =~ ^[0-9]+$ && "$_ghostty_windows" -gt 0 ]]; then
+  echo "Setting up $_left+$_right pane workspace (Ghostty native)..."
+
+  # _gcmd: AppleScript input text line for a given pane index and terminal var
+  _gcmd() {
+    local idx="$1" tvar="$2"
+    local cmd
+    if (( _WORK )); then
+      cmd="${_cmds[$idx]}"  # "source /tmp/claude-pane-PID-N.sh"
+    else
+      cmd="cd '$dir' && clear && claude"
+    fi
+    printf '  input text ("%s" & return) to %s\n' "$cmd" "$tvar"
+  }
+
+  as_splits=""
+  right_vars=()
+  if (( _right >= 1 )); then
+    as_splits+="  set tR1 to split myT direction right\n"
+    as_splits+="$(_gcmd 2 tR1)\n"
+    right_vars+=(tR1); prev="tR1"
+    for i in $(seq 2 $_right); do
+      v="tR${i}"
+      as_splits+="  set $v to split $prev direction down\n"
+      as_splits+="$(_gcmd $(( 2*i )) $v)\n"
+      right_vars+=("$v"); prev="$v"
+    done
+  fi
+
+  left_vars=(); prev="myT"
+  for i in $(seq 2 $_left); do
+    v="tL${i}"
+    as_splits+="  set $v to split $prev direction down\n"
+    as_splits+="$(_gcmd $(( 2*i-1 )) $v)\n"
+    left_vars+=("$v"); prev="$v"
+  done
+
+  local orig_cmd
+  if (( _WORK )); then
+    orig_cmd="${_cmds[1]}"
+  else
+    orig_cmd="clear && claude"
+  fi
+
+  result=$(osascript 2>&1 << ASEOF
+tell application "Ghostty"
+  try
+    set myT to focused terminal of selected tab of front window
+$(printf "%b" "$as_splits")
+    perform action "equalize_splits" on myT
+    input text ("$orig_cmd" & return) to myT
+    return "ok"
+  on error msg
+    return "error:" & msg
+  end try
+end tell
+ASEOF
+  )
+
+  if [[ "$result" == "ok" ]]; then
+    echo "Done — $n panes ready."
+    exit 0
+  else
+    echo "Ghostty split failed: $result"
+    echo "Tip: System Settings → Privacy & Security → Automation → Ghostty ✓"
+    echo "Falling back to tmux..."
+  fi
+fi
+
+# ── 3. tmux — works in any terminal ──────────────────────────────────────────
+if ! command -v tmux &>/dev/null; then
+  echo "Error: tmux required. Install: brew install tmux"
+  exit 1
+fi
+
+_tmux_conf="$HOME/.config/claude-terminals/tmux.conf"
+_tmux_sock="claude-terminals"
+_tmux() { tmux -L "$_tmux_sock" -f "$_tmux_conf" "$@"; }
+
+session="$(basename "$dir")-$$"
+echo "Setting up $n pane workspace (session: $session)..."
+
+if [[ -n "$TMUX" ]]; then
+  for i in $(seq 2 "$n"); do tmux split-window -c "${_dirs[$i]}"; done
+  tmux select-layout tiled
+  for i in $(seq 1 "$n"); do tmux send-keys -t $(( i-1 )) "${_cmds[$i]}" Enter; done
+  exit 0
+fi
+
+_tmux new-session -d -s "$session" -c "${_dirs[1]}"
+for i in $(seq 2 "$n"); do
+  _tmux split-window -t "${session}:1" -c "${_dirs[$i]}"
+done
+_tmux select-layout -t "${session}:1" tiled
+for i in $(seq 1 "$n"); do
+  _tmux send-keys -t "${session}:1.$i" "${_cmds[$i]}" Enter
+done
+exec tmux -L "$_tmux_sock" -f "$_tmux_conf" attach-session -t "$session"
