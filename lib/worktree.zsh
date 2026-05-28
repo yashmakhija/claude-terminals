@@ -34,7 +34,52 @@ else
   printf "What are you working on? "
   read -r _shared_goal
   [[ -z "$_shared_goal" ]] && { echo "Please describe the goal."; exit 1; }
-  for i in $(seq 1 "$n"); do _goals+=("$_shared_goal"); done
+
+  # Ask Claude to break the goal into N parallel tasks before opening terminals
+  printf "\nPlanning %d tasks..." "$n"
+
+  local _plan_prompt="You are planning parallel work for ${n} Claude Code agents on the same codebase.
+
+Goal: ${_shared_goal}
+
+Break this into exactly ${n} independent tasks agents can work on simultaneously.
+Each task must be specific, actionable, and roughly equal in scope.
+Tasks must not block each other — agents start at the same time.
+
+Return exactly ${n} lines. One task per line. No numbers, no bullets, no extra text."
+
+  local _raw_plan
+  _raw_plan=$(cd "$dir" && claude --print "$_plan_prompt" 2>/dev/null)
+
+  if [[ -n "$_raw_plan" ]]; then
+    local _line_count=0
+    while IFS= read -r line; do
+      [[ -z "$line" ]] && continue
+      (( _line_count++ ))
+      (( _line_count > n )) && break
+      _goals+=("$line")
+    done <<< "$_raw_plan"
+
+    # Pad if fewer lines returned than expected
+    while (( ${#_goals[@]} < n )); do _goals+=("$_shared_goal"); done
+
+    printf " ✓\n\n"
+    for i in $(seq 1 "$n"); do
+      printf "  Agent %-2d → %s\n" "$i" "${_goals[$i]}"
+    done
+    printf "\n"
+
+    printf "Proceed with these tasks? [y/n, default y]: "
+    read -r _confirm
+    if [[ "$_confirm" == "n" || "$_confirm" == "no" ]]; then
+      _goals=()
+      for i in $(seq 1 "$n"); do _goals+=("$_shared_goal"); done
+      printf "Using shared goal for all agents.\n"
+    fi
+  else
+    printf " (Claude unavailable, all agents share the same goal)\n"
+    for i in $(seq 1 "$n"); do _goals+=("$_shared_goal"); done
+  fi
 fi
 
 echo ""
@@ -98,19 +143,13 @@ local _now; _now=$(date '+%H:%M')
 
   printf "\n---\n\n"
 
-  # Task board
+  # Task board — always pre-populated (same mode was planned by Claude, diff mode by user)
   printf "## Task Board\n\n"
-  if [[ "$_goal_mode" == "diff" ]]; then
-    printf "| # | Task | Agent | Phase | Status | Notes |\n"
-    printf "|---|------|-------|-------|--------|-------|\n"
-    for i in $(seq 1 "$n"); do
-      printf "| %d | %s | | 1 | ⏳ pending | |\n" "$i" "${_goals[$i]}"
-    done
-  else
-    printf "| # | Task | Agent | Phase | Status | Notes |\n"
-    printf "|---|------|-------|-------|--------|-------|\n"
-    printf "| - | _(Agent 1 fills this in after reading the codebase)_ | | | | |\n"
-  fi
+  printf "| # | Task | Agent | Phase | Status | Notes |\n"
+  printf "|---|------|-------|-------|--------|-------|\n"
+  for i in $(seq 1 "$n"); do
+    printf "| %d | %s | %d | 1 | ⏳ pending | |\n" "$i" "${_goals[$i]}" "$i"
+  done
 
   printf "\n---\n\n"
 
@@ -180,18 +219,16 @@ for i in $(seq 1 "$n"); do
   local sys_prompt
 
   if [[ $i -eq 1 ]]; then
-    sys_prompt="You are Agent 1 (lead) of ${n} in a parallel work session. Goal: ${goal}.
+    sys_prompt="You are Agent 1 of ${n} in a parallel work session. Your task: ${goal}.
 
-TASKS.md is your shared live memory — all agents read and write it. It syncs in real-time.
+TASKS.md is already filled with all ${n} tasks — do NOT re-plan. All agents start simultaneously.
 
 Your first move:
-1. Read the codebase to understand the project
-2. Break the goal into subtasks in TASKS.md (Task Board section), one row per agent
-3. Update your row in Agent Status to show what you're doing
-4. Write any key findings to Shared Memory so other agents can start
-5. Claim task 1 and start working
+1. Update your row in Agent Status (TASKS.md) to 🔄 in progress
+2. Start working on your task immediately
+3. Write key findings to Shared Memory as you discover things others need to know
 
-Before every action: re-read TASKS.md. After every subtask: update your Agent Status row and add findings to Shared Memory. Post to Blockers if stuck. Save the file — it is the live coordination layer."
+Before every action: re-read TASKS.md. After every subtask: update Agent Status and Shared Memory. Post to Blockers if stuck. Save the file — it is the live coordination layer."
   else
     sys_prompt="You are Agent ${i} of ${n} in a parallel work session. Goal: ${goal}.
 
