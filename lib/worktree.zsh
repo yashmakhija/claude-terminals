@@ -1,14 +1,60 @@
 #!/usr/bin/env zsh
-# c worktree
+# c worktree [--refresh]
 # Interactive parallel work session — each agent gets its own git worktree,
 # launched via native Claude Code flags (-n, --append-system-prompt).
 
 dir="$PWD"
+main_dir="$dir"
 
 if ! git -C "$dir" rev-parse --git-dir &>/dev/null; then
   echo "Error: c worktree must be run from inside a git project."
   exit 1
 fi
+
+# ── flags ─────────────────────────────────────────────────────────────────────
+
+local _refresh=0
+for arg in "$@"; do [[ "$arg" == "--refresh" ]] && _refresh=1; done
+
+# ── project context (auto-updates when git HEAD changes) ─────────────────────
+
+local _ctx_file="$main_dir/CONTEXT.md"
+local _current_sha; _current_sha=$(git -C "$dir" rev-parse HEAD 2>/dev/null)
+local _cached_sha; _cached_sha=$(grep -m1 'context-sha:' "$_ctx_file" 2>/dev/null | grep -o '[a-f0-9]\{7,\}')
+local _ctx=""
+
+if [[ $_refresh -eq 0 && -f "$_ctx_file" && -n "$_cached_sha" && "$_current_sha" == "$_cached_sha" ]]; then
+  _ctx=$(grep -v '^<!-- context-sha:' "$_ctx_file")
+  printf "  Project context up to date\n"
+else
+  printf "  Scanning project context..."
+
+  local _ctx_prompt='Analyze this codebase and write a compact but complete project brief for coding agents about to start work.
+
+Include all of these:
+1. What this project does (1 sentence)
+2. Tech stack: language version, framework, key libraries, database
+3. How to run and test (exact commands from README or package.json/Makefile)
+4. Key directories — name and purpose (5-8 max, use actual names)
+5. Code patterns and conventions used in this codebase
+6. Key files every agent must know about
+7. Required env vars or external services (from .env.example or README)
+
+Use markdown headers. Max 200 words. Use actual file and folder names from this project — be specific.'
+
+  _ctx=$(cd "$dir" && claude --print "$_ctx_prompt" 2>/dev/null)
+  if [[ -n "$_ctx" ]]; then
+    {
+      printf "<!-- context-sha: %s -->\n\n" "$_current_sha"
+      printf '%s\n' "$_ctx"
+    } > "$_ctx_file"
+    printf " ✓\n"
+  else
+    printf " (skipped — Claude unavailable)\n"
+  fi
+fi
+
+echo ""
 
 # ── prompts ───────────────────────────────────────────────────────────────────
 
@@ -35,16 +81,23 @@ else
   read -r _shared_goal
   [[ -z "$_shared_goal" ]] && { echo "Please describe the goal."; exit 1; }
 
-  # Ask Claude to break the goal into N parallel tasks before opening terminals
+  # Use context to generate codebase-specific task breakdown
   printf "\nPlanning %d tasks..." "$n"
 
   local _plan_prompt="You are planning parallel work for ${n} Claude Code agents on the same codebase.
 
-Goal: ${_shared_goal}
+Goal: ${_shared_goal}"
+
+  [[ -n "$_ctx" ]] && _plan_prompt="${_plan_prompt}
+
+Project context:
+${_ctx}"
+
+  _plan_prompt="${_plan_prompt}
 
 Break this into exactly ${n} independent tasks agents can work on simultaneously.
-Each task must be specific, actionable, and roughly equal in scope.
-Tasks must not block each other — agents start at the same time.
+Reference actual files and directories from the project context above.
+Each task must be specific, actionable, and independently workable. Equal scope.
 
 Return exactly ${n} lines. One task per line. No numbers, no bullets, no extra text."
 
@@ -60,7 +113,6 @@ Return exactly ${n} lines. One task per line. No numbers, no bullets, no extra t
       _goals+=("$line")
     done <<< "$_raw_plan"
 
-    # Pad if fewer lines returned than expected
     while (( ${#_goals[@]} < n )); do _goals+=("$_shared_goal"); done
 
     printf " ✓\n\n"
@@ -87,7 +139,6 @@ echo ""
 # ── worktrees ─────────────────────────────────────────────────────────────────
 
 local proj; proj=$(basename "$dir")
-local main_dir="$dir"
 local base_branch; base_branch=$(git -C "$dir" rev-parse --abbrev-ref HEAD)
 typeset -a _dirs _cmds
 
@@ -129,21 +180,15 @@ local _now; _now=$(date '+%H:%M')
   fi
   printf "_Started: %s — %d agents_\n\n" "$_now" "$n"
 
-  # Agent Status — live heartbeat table
   printf "## Agent Status\n\n"
   printf "| Agent | Status | Current Task | Notes |\n"
   printf "|-------|--------|--------------|-------|\n"
   for i in $(seq 1 "$n"); do
-    if [[ $i -eq 1 ]]; then
-      printf "| Agent %d (lead) | ⏳ starting | planning | |\n" "$i"
-    else
-      printf "| Agent %d | ⏳ waiting | waiting for TASKS | |\n" "$i"
-    fi
+    printf "| Agent %d | ⏳ ready | %s | |\n" "$i" "${_goals[$i]}"
   done
 
   printf "\n---\n\n"
 
-  # Task board — always pre-populated (same mode was planned by Claude, diff mode by user)
   printf "## Task Board\n\n"
   printf "| # | Task | Agent | Phase | Status | Notes |\n"
   printf "|---|------|-------|-------|--------|-------|\n"
@@ -153,7 +198,6 @@ local _now; _now=$(date '+%H:%M')
 
   printf "\n---\n\n"
 
-  # Shared memory — all agents read and write here
   printf "## Shared Memory\n\n"
   printf "> Key decisions, findings, and context all agents need to know.\n"
   printf "> Any agent can add here — write enough for another agent to pick up your work.\n\n"
@@ -161,13 +205,11 @@ local _now; _now=$(date '+%H:%M')
 
   printf "---\n\n"
 
-  # Blockers
   printf "## Blockers\n\n"
   printf "_(none yet)_\n\n"
 
   printf "---\n\n"
 
-  # Protocol
   printf "## Collaboration Rules\n\n"
   printf "1. **Before every action:** re-read this file to see what others are doing\n"
   printf "2. **Update Agent Status** every time you start or finish a subtask\n"
@@ -178,9 +220,10 @@ local _now; _now=$(date '+%H:%M')
 } > "$main_dir/TASKS.md"
 
 for i in $(seq 1 "$n"); do
-  ln -sf "$main_dir/TASKS.md" "${_dirs[$i]}/TASKS.md" 2>/dev/null || true
+  ln -sf "$main_dir/TASKS.md"   "${_dirs[$i]}/TASKS.md"   2>/dev/null || true
+  [[ -f "$_ctx_file" ]] && ln -sf "$_ctx_file" "${_dirs[$i]}/CONTEXT.md" 2>/dev/null || true
 done
-echo "✓ TASKS.md created + symlinked into each worktree"
+echo "✓ TASKS.md + CONTEXT.md symlinked into each worktree"
 
 # ── CLAUDE.md ─────────────────────────────────────────────────────────────────
 
@@ -193,12 +236,17 @@ fi
 {
   printf "<!-- claude-work-session -->\n"
   printf "## Active Work Session (%d agents)\n\n" "$n"
+
+  if [[ -n "$_ctx" ]]; then
+    printf "### Project Context\n\n%s\n\n---\n\n" "$_ctx"
+  fi
+
   printf "\`TASKS.md\` is the shared live memory for this session — read it before every action, write back after every subtask.\n\n"
   printf "| Section | Purpose |\n"
   printf "|---------|--------|\n"
   printf "| Agent Status | Who is doing what right now — update your row constantly |\n"
-  printf "| Task Board | All tasks and their phases — claim rows, update status |\n"
-  printf "| Shared Memory | Findings, decisions, context — write anything another agent needs |\n"
+  printf "| Task Board | All tasks and phases — update status as you work |\n"
+  printf "| Shared Memory | Findings, decisions — write anything another agent needs |\n"
   printf "| Blockers | Post when stuck; check if you can unblock others |\n\n"
   printf "Your code changes stay on your branch (\`work/agent-N\`). Merge when done.\n"
   printf "<!-- /claude-work-session -->\n"
@@ -213,36 +261,33 @@ echo "✓ CLAUDE.md updated"
 
 export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 
+# Context block prepended to every agent's system prompt
+local _ctx_block=""
+if [[ -n "$_ctx" ]]; then
+  _ctx_block="## Project Context
+${_ctx}
+
+You do NOT need to explore the codebase — the above is a complete orientation. Start your task immediately.
+
+---
+"
+fi
+
 for i in $(seq 1 "$n"); do
   local wt="${_dirs[$i]}"
   local goal="${_goals[$i]}"
   local sys_prompt
 
-  if [[ $i -eq 1 ]]; then
-    sys_prompt="You are Agent 1 of ${n} in a parallel work session. Your task: ${goal}.
+  sys_prompt="${_ctx_block}You are Agent ${i} of ${n} in a parallel work session. Your task: ${goal}.
 
-TASKS.md is already filled with all ${n} tasks — do NOT re-plan. All agents start simultaneously.
-
-Your first move:
-1. Update your row in Agent Status (TASKS.md) to 🔄 in progress
-2. Start working on your task immediately
-3. Write key findings to Shared Memory as you discover things others need to know
-
-Before every action: re-read TASKS.md. After every subtask: update Agent Status and Shared Memory. Post to Blockers if stuck. Save the file — it is the live coordination layer."
-  else
-    sys_prompt="You are Agent ${i} of ${n} in a parallel work session. Goal: ${goal}.
-
-TASKS.md is your shared live memory — all agents read and write it. It syncs in real-time.
+TASKS.md is the shared live memory — all agents read and write it in real-time.
 
 Your first move:
-1. Read TASKS.md — wait for Agent 1 to fill the Task Board if it is empty
-2. Claim an available task: put ${i} in the Agent column, change status to 🔄 in progress
-3. Update your row in Agent Status
-4. Work on your task; write key findings to Shared Memory as you go
-5. When done, mark ✅ done and pick the next unclaimed task
+1. Update your row in Agent Status to 🔄 in progress
+2. Start your task immediately — no codebase exploration needed, context is above
+3. Write key findings to Shared Memory as you go
 
-Before every action: re-read TASKS.md. After every subtask: update Agent Status and Shared Memory. Post to Blockers if stuck. Save the file — it is the live coordination layer."
-  fi
+Before every action: re-read TASKS.md. After every subtask: update Agent Status and Shared Memory. Post to Blockers if stuck."
 
   _cmds+=("cd $(printf '%q' "$wt") && claude -n $(printf '%q' "Agent ${i}: ${goal}") --append-system-prompt $(printf '%q' "$sys_prompt")")
 done

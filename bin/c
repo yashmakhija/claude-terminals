@@ -3,7 +3,7 @@ _BIN="${${(%):-%x}:A:h}"
 _LIB="${_BIN}/../lib"
 
 case "$1" in
-  worktree) shift; source "$_LIB/worktree.zsh" ;;
+  worktree) shift; source "$_LIB/worktree.zsh" "$@" ;;
   terminal) shift; source "$_LIB/terminal.zsh" "$@" ;;
   *)        echo "Usage: c terminal <N> | c worktree"; exit 1 ;;
 esac
