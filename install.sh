@@ -25,7 +25,7 @@ echo "  Installed $HOME/bin/c"
 # Install lib/ scripts
 LIB_DIR="$HOME/lib/claude-terminals"
 mkdir -p "$LIB_DIR"
-for f in terminal.zsh worktree.zsh splits.zsh; do
+for f in terminal.zsh worktree.zsh work.zsh splits.zsh; do
   if (( LOCAL )); then
     cp "./lib/$f" "$LIB_DIR/$f"
   else
@@ -90,5 +90,6 @@ echo "Done! Restart your shell or run:"
 echo "  source $SHELL_RC"
 echo ""
 echo "Usage:"
-echo "  c terminal 4    # open 4 panes, claude in each"
-echo "  c worktree      # parallel work session with git worktrees"
+echo "  c work 4        # 4 agents, Agent 1 orchestrates the team"
+echo "  c terminal 4    # 4 bare Claude sessions"
+echo "  c worktree      # parallel agents on separate git branches"

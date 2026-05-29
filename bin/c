@@ -3,7 +3,8 @@ _BIN="${${(%):-%x}:A:h}"
 _LIB="${_BIN}/../lib"
 
 case "$1" in
+  work)     shift; source "$_LIB/work.zsh" "$@" ;;
   worktree) shift; source "$_LIB/worktree.zsh" "$@" ;;
   terminal) shift; source "$_LIB/terminal.zsh" "$@" ;;
-  *)        echo "Usage: c terminal <N> | c worktree"; exit 1 ;;
+  *)        printf "Usage:\n  c work [N]       parallel agents, Agent 1 orchestrates\n  c terminal <N>   N bare Claude sessions\n  c worktree       parallel agents on separate git branches\n"; exit 1 ;;
 esac
